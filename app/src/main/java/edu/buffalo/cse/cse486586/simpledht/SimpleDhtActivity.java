@@ -1,12 +1,24 @@
 package edu.buffalo.cse.cse486586.simpledht;
 
+import android.content.Context;
 import android.os.Bundle;
 import android.app.Activity;
+import android.telephony.TelephonyManager;
 import android.text.method.ScrollingMovementMethod;
+import android.util.Log;
 import android.view.Menu;
 import android.widget.TextView;
 
 public class SimpleDhtActivity extends Activity {
+    public String getMyPort() {
+        return myPort;
+    }
+
+    public void setMyPort(String myPort) {
+        this.myPort = myPort;
+    }
+
+    private String myPort = "";
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
