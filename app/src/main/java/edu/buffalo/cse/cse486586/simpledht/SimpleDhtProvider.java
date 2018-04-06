@@ -14,8 +14,12 @@ import java.net.Socket;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.Formatter;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.Set;
 
 import android.content.ContentProvider;
 import android.content.ContentValues;
@@ -42,10 +46,27 @@ public class SimpleDhtProvider extends ContentProvider {
     static final String request_join="Node-Join"; // Node join message identifier
     static final String key_search="Data-Search"; // Data search message identifier
     static final String key_insert="Data-Insert"; // Key insert message identifier
+    static final String pre_send="Predecessor"; // Predecessor identifier
+    static final String suc_send="Successor"; // Successor identifier
     static final int timeout=500;
+    static final String curr_node_queryall="@"; // Identifier used to query all the keys stored in the current node
+    static final String all_node_queryall="*"; // Identifier used to query the entire dht
+    private ArrayList<String> my_keys=new ArrayList<String>();
+    private ArrayList<String> hashed_ids=new ArrayList<String>();
+    private HashMap<String, String> ids_port_map = new HashMap<String, String>() ;
     @Override
     public int delete(Uri uri, String selection, String[] selectionArgs) {
         // TODO Auto-generated method stub
+        if(am_i_the_only_node()){
+            Log.v("Delete","I am the only node");
+            if(selection.equals("*") || selection.equals("@")){
+                for(String key : my_keys)
+                    delete_key_in_my_node(key);
+            }
+            else{
+                delete_key_in_my_node(selection);
+            }
+        }
         return 0;
     }
 
@@ -81,11 +102,11 @@ public class SimpleDhtProvider extends ContentProvider {
         }catch(Exception e){
             e.printStackTrace();
         }
-//        if(!create_server_sock()){
-//            Log.e("Oncreate","Failed to create server socket");
-//            return false;
-//        }
-        //send_join_request(); // Send request for node joining into the chord ring
+        if(!create_server_sock()){
+            Log.e("Oncreate","Failed to create server socket");
+            return false;
+        }
+        send_join_request(myPort,parent_port); // Send request for node joining into the chord ring
         return false;
     }
 
@@ -123,38 +144,34 @@ public class SimpleDhtProvider extends ContentProvider {
             e.printStackTrace();
             Log.e(TAG, "Can't create a ServerSocket");
             return false;
-        }finally {
-            if(serverSocket!=null)
-                try {
-                    serverSocket.close();
-                }catch(Exception e1){
-                    e1.printStackTrace();
-                }
-
         }
         return true;
     }
-    public void send_join_request(){ // Function to send node join request
-        if(!(myPort.equals(parent_port))){
-            Log.v("Node Join","Sending request to parent node");
-            String msg_request=request_join+delimiter+myPort;
-            new ClientTask().executeOnExecutor(AsyncTask.SERIAL_EXECUTOR, msg_request,parent_port);
+    public void send_join_request(String sender_port,String to_port){ // Function to send node join request
+        if(!(sender_port.equals(parent_port))){
+            Log.v("Node Join","Sending node join request to node");
+            String msg_request=request_join+delimiter+sender_port;
+            new ClientTask().executeOnExecutor(AsyncTask.SERIAL_EXECUTOR, msg_request,to_port);
         }
     }
     public void process_insert(String key,String value){
         Log.v("Insert","Processing insert");
         if(am_i_the_only_node()){
             Log.v("Insert","I am the only node in the ring");
-            try{
-                FileOutputStream fos = getContext().openFileOutput(key, Context.MODE_PRIVATE);
-                fos.write(value.getBytes());
-                fos.close();
-            }catch (Exception e){
-                e.printStackTrace();
-            }
+            insert_in_my_node(key,value);
         }
         else{
             // calculate genhash value and process it as per the chord
+        }
+    }
+    public void insert_in_my_node(String key, String value){
+        try{
+            FileOutputStream fos = getContext().openFileOutput(key, Context.MODE_PRIVATE);
+            fos.write(value.getBytes());
+            fos.close();
+            my_keys.add(key);
+        }catch (Exception e){
+            e.printStackTrace();
         }
     }
     public MatrixCursor process_query(String selection){
@@ -163,32 +180,59 @@ public class SimpleDhtProvider extends ContentProvider {
         MatrixCursor mc = new MatrixCursor(column_names);
         if(am_i_the_only_node()) {
             Log.v("Query","I am the only node");
-            try {
-                FileInputStream fis = getContext().openFileInput(selection);
-                BufferedReader br = new BufferedReader(new InputStreamReader(fis));
-                String key_value;
-                String value = null;
-                while ((key_value = br.readLine()) != null) {
-                    value = key_value;
+            String value="";
+            if(selection.equals(all_node_queryall) || selection.equals(curr_node_queryall)) {
+                Log.v("Query","Querying "+selection+" when I am the only node");
+                for(String key : my_keys) {
+                    value=query_my_node(key);
+                    mc.newRow().add("key", key).add("value", value.trim());
                 }
-                br.close();
-                fis.close();
-                Log.v("Query value", value);
-                mc.newRow().add("key", selection).add("value", value.trim());
-
-                mc.close();
-
-            } catch (Exception e) {
-                e.printStackTrace();
             }
+            else{
+                value=query_my_node(selection);
+                mc.newRow().add("key", selection).add("value", value.trim());
+            }
+
+            mc.close();
         }
         return mc;
+    }
+    public String query_my_node(String key){
+        String value="";
+        try {
+            FileInputStream fis = getContext().openFileInput(key);
+            BufferedReader br = new BufferedReader(new InputStreamReader(fis));
+            String key_value;
+            while ((key_value = br.readLine()) != null) {
+                value = key_value;
+            }
+            br.close();
+            fis.close();
+
+
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+        return value;
+    }
+    public void delete_key_in_my_node(String key){
+        try {
+            getContext().deleteFile(key);
+            my_keys.remove(key);
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
     }
     private boolean am_i_the_only_node(){ // Function which returns if the node is single in the chord ring
         if(myId==predecessor && myId==successor)
             return true;
         else
             return false;
+    }
+    public void print_my_location(){
+        Log.v("About me","MY PORT :"+myPort);
+        Log.v("About me","MY PRE :"+predecessor);
+        Log.v("About me","MY SUC :"+successor);
     }
     private class ServerTask extends AsyncTask<ServerSocket, String, Void> { // Server task to accept client connections and process their messages
         @Override
@@ -203,13 +247,13 @@ public class SimpleDhtProvider extends ContentProvider {
                 try {
                     // Source : https://docs.oracle.com/javase/tutorial/networking/sockets/clientServer.html
                     client_sock = serverSocket.accept();
-                    Log.v("Message received","\n");
+
                     try {
                         bR = new BufferedReader(new InputStreamReader(client_sock.getInputStream()));
                         message = bR.readLine();
                         message = message.trim();
-                        if(client_sock!=null)
-                            client_sock.close();
+                        Log.v("Server task","message :"+message);
+                        process_server_msg(message);
                     }catch(Exception e1){
                         e1.printStackTrace();
                         if(client_sock!=null)
@@ -229,6 +273,102 @@ public class SimpleDhtProvider extends ContentProvider {
                 }
 
             }
+        }
+        public void process_server_msg(String message){
+            String[] format;
+            format=message.split(delimiter);
+            if(format[0].equals(request_join)){
+                process_node_join(format[1]);
+            }
+            else if(format[0].equals(pre_send)){
+                predecessor = format[1];
+                Log.v("Server","Predecessor : "+predecessor);
+            }
+            else if(format[0].equals(suc_send)){
+                successor = format[1];
+                Log.v("Server","Successor : "+successor);
+            }
+            print_my_location();
+        }
+        public void process_node_join(String node_port){
+            if(am_i_the_only_node()){
+                Log.v("Process node join","I am the only node");
+                predecessor = node_port;
+                successor = node_port;
+                String pre_msg=pre_send+delimiter+myPort;
+                String suc_msg=suc_send+delimiter+myPort;
+                new ClientTask().executeOnExecutor(AsyncTask.SERIAL_EXECUTOR,pre_msg,node_port);
+                new ClientTask().executeOnExecutor(AsyncTask.SERIAL_EXECUTOR,suc_msg,node_port);
+                try {
+                    String hash_id = genHash(node_port);
+                    hashed_ids.add(hash_id);
+                    hashed_ids.add(myId);
+                    ids_port_map.put(myId,myPort);
+                    ids_port_map.put(hash_id,node_port);
+                }catch(Exception e){
+                    e.printStackTrace();
+                }
+
+            }
+            else{
+                try {
+                    Log.v("Process node join","Other nodes present in the ring");
+                    String new_node_hash = genHash(node_port);
+                    Collections.sort(hashed_ids);
+                    String prevId=hashed_ids.get(0);
+                    boolean loc_found=false; // initialized to check if the location of node is found
+                    for(String hId:hashed_ids){
+                        if(new_node_hash.compareTo(hId)<0 && new_node_hash.compareTo(prevId)>0){
+                            String suc_port=ids_port_map.get(hId);
+                            String pre_port=ids_port_map.get(prevId);
+                            String pre_msg=pre_send+delimiter+pre_port;
+                            String suc_msg=suc_send+delimiter+suc_port;
+                            // sending message to new node about its pre and suc
+                            new ClientTask().executeOnExecutor(AsyncTask.SERIAL_EXECUTOR,pre_msg,node_port);
+                            new ClientTask().executeOnExecutor(AsyncTask.SERIAL_EXECUTOR,suc_msg,node_port);
+                            // Sending messages to its suc and pre
+                            pre_msg=pre_send+delimiter+node_port;
+                            suc_msg=suc_send+delimiter+node_port;
+                            new ClientTask().executeOnExecutor(AsyncTask.SERIAL_EXECUTOR,pre_msg,suc_port);
+                            new ClientTask().executeOnExecutor(AsyncTask.SERIAL_EXECUTOR,suc_msg,pre_port);
+                            loc_found=true; // Setting it to true as location is found
+                            break;
+                        }
+                        prevId=hId;
+                    }
+                    if(!loc_found){
+                        Log.v("Node join","Location not found");
+                        String firstId=hashed_ids.get(0);
+                        String lastId=hashed_ids.get(hashed_ids.size()-1);
+                        String suc_port=ids_port_map.get(firstId);
+                        String pre_port=ids_port_map.get(lastId);
+                        String pre_msg=pre_send+delimiter+pre_port;
+                        String suc_msg=suc_send+delimiter+suc_port;
+                        // sending message to new node about its pre and suc
+                        new ClientTask().executeOnExecutor(AsyncTask.SERIAL_EXECUTOR,pre_msg,node_port);
+                        new ClientTask().executeOnExecutor(AsyncTask.SERIAL_EXECUTOR,suc_msg,node_port);
+                        // Sending messages to its suc and pre
+                        pre_msg=pre_send+delimiter+node_port;
+                        suc_msg=suc_send+delimiter+node_port;
+                        new ClientTask().executeOnExecutor(AsyncTask.SERIAL_EXECUTOR,pre_msg,suc_port);
+                        new ClientTask().executeOnExecutor(AsyncTask.SERIAL_EXECUTOR,suc_msg,pre_port);
+                    }
+                    hashed_ids.add(new_node_hash);
+                    ids_port_map.put(new_node_hash,node_port);
+                }catch(Exception e){
+                    e.printStackTrace();
+                }
+            }
+        }
+        public void send_node_iam_succ(String node_port){
+            String pre_msg=pre_send+delimiter+predecessor;
+            String suc_msg=suc_send+delimiter+myPort;
+            new ClientTask().executeOnExecutor(AsyncTask.SERIAL_EXECUTOR,pre_msg,node_port);
+            new ClientTask().executeOnExecutor(AsyncTask.SERIAL_EXECUTOR,suc_msg,node_port);
+            // Updating my pre about its new suc and updating my pre to new node
+            suc_msg=suc_send+delimiter+node_port;
+            new ClientTask().executeOnExecutor(AsyncTask.SERIAL_EXECUTOR,suc_msg,predecessor);
+            predecessor=node_port;
         }
 
     }
