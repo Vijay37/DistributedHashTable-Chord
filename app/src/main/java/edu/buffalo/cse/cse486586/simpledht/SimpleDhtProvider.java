@@ -162,10 +162,33 @@ public class SimpleDhtProvider extends ContentProvider {
         }
         else{
             // calculate genhash value and process it as per the chord
+            try {
+                String key_hash = genHash(key);
+                String pre_hash = genHash(predecessor);
+                int pre_key_diff = key_hash.compareTo(pre_hash);
+                int my_key_diff = key_hash.compareTo(myId);
+                int my_pre_diff = myId.compareTo(pre_hash);
+                if(pre_key_diff>0 && my_key_diff<=0){  // if the id is between my predessor and me
+                    insert_in_my_node(key,value);
+                }
+                else if(pre_key_diff>0 && my_pre_diff<0){ // If the id is greater than my predessor and I am less than my predessor where end and start meet
+                    insert_in_my_node(key,value);
+                }
+                else if(my_pre_diff<0 && my_key_diff<=0){ // If the id smaller than my node and I am less than my predessor
+                    insert_in_my_node(key,value);
+                }
+                else{ // forward the insert to my successor
+                    String forward_insert_msg=key_insert+delimiter+key+delimiter+value;
+                    new ClientTask().executeOnExecutor(AsyncTask.SERIAL_EXECUTOR,forward_insert_msg,successor);
+                }
+            }catch(Exception e){
+                e.printStackTrace();
+            }
         }
     }
     public void insert_in_my_node(String key, String value){
         try{
+            Log.v("Insert at my node","Key :"+key+" Value:"+value);
             FileOutputStream fos = getContext().openFileOutput(key, Context.MODE_PRIVATE);
             fos.write(value.getBytes());
             fos.close();
@@ -194,6 +217,16 @@ public class SimpleDhtProvider extends ContentProvider {
             }
 
             mc.close();
+        }
+        else{
+            if(selection.equals(curr_node_queryall)){
+                Log.v("Query","Querying "+selection+" when I am not the only node");
+                String value="";
+                for(String key : my_keys) {
+                    value=query_my_node(key);
+                    mc.newRow().add("key", key).add("value", value.trim());
+                }
+            }
         }
         return mc;
     }
@@ -253,7 +286,7 @@ public class SimpleDhtProvider extends ContentProvider {
                         message = bR.readLine();
                         message = message.trim();
                         Log.v("Server task","message :"+message);
-                        process_server_msg(message);
+                        publishProgress(message);
                     }catch(Exception e1){
                         e1.printStackTrace();
                         if(client_sock!=null)
@@ -274,6 +307,12 @@ public class SimpleDhtProvider extends ContentProvider {
 
             }
         }
+
+        @Override
+        protected void onProgressUpdate(String... values) {
+            String message = values[0];
+            process_server_msg(message);
+        }
         public void process_server_msg(String message){
             String[] format;
             format=message.split(delimiter);
@@ -287,6 +326,9 @@ public class SimpleDhtProvider extends ContentProvider {
             else if(format[0].equals(suc_send)){
                 successor = format[1];
                 Log.v("Server","Successor : "+successor);
+            }
+            else if(format[0].equals(key_insert)){
+                process_insert(format[1],format[2]);
             }
             print_my_location();
         }
@@ -360,16 +402,6 @@ public class SimpleDhtProvider extends ContentProvider {
                 }
             }
         }
-        public void send_node_iam_succ(String node_port){
-            String pre_msg=pre_send+delimiter+predecessor;
-            String suc_msg=suc_send+delimiter+myPort;
-            new ClientTask().executeOnExecutor(AsyncTask.SERIAL_EXECUTOR,pre_msg,node_port);
-            new ClientTask().executeOnExecutor(AsyncTask.SERIAL_EXECUTOR,suc_msg,node_port);
-            // Updating my pre about its new suc and updating my pre to new node
-            suc_msg=suc_send+delimiter+node_port;
-            new ClientTask().executeOnExecutor(AsyncTask.SERIAL_EXECUTOR,suc_msg,predecessor);
-            predecessor=node_port;
-        }
 
     }
     private class ClientTask extends AsyncTask<String, Void, Void> {
@@ -387,7 +419,7 @@ public class SimpleDhtProvider extends ContentProvider {
                 socket = new Socket();
                 socket.connect(new InetSocketAddress(InetAddress.getByAddress(new byte[]{10, 0, 2, 2}),
                         Integer.parseInt(toPort)));
-                socket.setSoTimeout(timeout);
+//                socket.setSoTimeout(timeout);
                 out = new PrintWriter(socket.getOutputStream(), true);
                 out.println(msgToSend);
                 bR = new BufferedReader(new InputStreamReader(socket.getInputStream())); // Read message from the socket
