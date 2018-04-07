@@ -47,6 +47,7 @@ public class SimpleDhtProvider extends ContentProvider {
     static final String suc_send="Successor"; // Successor identifier
     static final String key_result="Search-Result"; // identifier to tell node about the result it has queried
     static final String add_key="Add-Key"; // Identifier to tell node to add this key into its hash table (Content provider) used when a new node joins
+    static final String del_key="Del-Key"; // Identifier to tell node to delete key
     static final String curr_node_queryall="@"; // Identifier used to query all the keys stored in the current node
     static final String all_node_queryall="*"; // Identifier used to query the entire dht
     private ArrayList<String> my_keys=new ArrayList<String>();
@@ -59,14 +60,29 @@ public class SimpleDhtProvider extends ContentProvider {
     public int delete(Uri uri, String selection, String[] selectionArgs) {
         // TODO Auto-generated method stub
         if(am_i_the_only_node()){
-            Log.v("Delete","I am the only node");
+            Log.v("Delete","I am the only node :"+selection);
             if(selection.equals("*") || selection.equals("@")){
-                for(String key : my_keys)
-                    delete_key_in_my_node(key);
+                delete_my_keys();
+                my_keys.clear();
             }
             else{
                 delete_key_in_my_node(selection);
+                my_keys.remove(selection);
             }
+        }
+        else{
+            if(selection.equals(curr_node_queryall)){
+                delete_my_keys();
+                my_keys.clear();
+            }
+            else if(selection.equals(all_node_queryall)){
+                delete_my_keys();
+                my_keys.clear();
+                String forward_delete_msg=del_key+delimiter+selection;
+                new ClientTask().executeOnExecutor(AsyncTask.SERIAL_EXECUTOR,forward_delete_msg,successor);
+            }
+            else
+                process_delete_key(selection,myPort);
         }
         return 0;
     }
@@ -331,10 +347,41 @@ public class SimpleDhtProvider extends ContentProvider {
     public void delete_key_in_my_node(String key){
         try {
             getContext().deleteFile(key);
-            my_keys.remove(key);
         } catch (Exception e) {
             e.printStackTrace();
         }
+    }
+    public void process_delete_key(String key,String from_port){
+        try {
+            String key_hash = genHash(key);
+            String pre_hash = genHash(predecessor);
+            int pre_key_diff = key_hash.compareTo(pre_hash);
+            int my_key_diff = key_hash.compareTo(myId);
+            int my_pre_diff = myId.compareTo(pre_hash);
+            if(pre_key_diff>0 && my_key_diff<=0){  // if the id is between my predessor and me
+                delete_key_in_my_node(key);
+                my_keys.remove(key);
+            }
+            else if(pre_key_diff>0 && my_pre_diff<0){ // If the id is greater than my predessor and I am less than my predessor where end and start meet
+                delete_key_in_my_node(key);
+                my_keys.remove(key);
+            }
+            else if(my_pre_diff<0 && my_key_diff<=0){ // If the id smaller than my node and I am less than my predessor
+                delete_key_in_my_node(key);
+                my_keys.remove(key);
+            }
+            else{ // forward the insert to my successor
+                String forward_delete_msg=del_key+delimiter+key+delimiter+from_port;
+                new ClientTask().executeOnExecutor(AsyncTask.SERIAL_EXECUTOR,forward_delete_msg,successor);
+            }
+        }catch(Exception e){
+            e.printStackTrace();
+        }
+    }
+    public void delete_my_keys(){
+        Log.v("Delete","Deleting my local keys");
+        for(String key : my_keys)
+            delete_key_in_my_node(key);
     }
     private boolean am_i_the_only_node(){ // Function which returns if the node is single in the chord ring
         if(myId==predecessor && myId==successor)
@@ -417,12 +464,27 @@ public class SimpleDhtProvider extends ContentProvider {
                 process_query_serverside(format[1],format[2]);
             }
             else if(format[0].equals(key_result)){
-                process_query_result(format[1],format[2]);
+                if(format.length!=3)
+                    process_query_result(format[1],"");
+                else
+                    process_query_result(format[1],format[2]);
             }
             else if(format[0].equals(add_key)){
                 process_distribute_keys(format[1]);
             }
-//            print_my_location();
+            else if(format[0].equals(del_key)){
+                process_delete_serverside(format[1],format[2]);
+            }
+        }
+        public void process_delete_serverside(String selection,String from_port){
+            if(selection.equals(all_node_queryall)){
+                delete_my_keys();
+                if(!from_port.equals(successor)){
+                    String forward_delete_msg=del_key+delimiter+selection+delimiter+from_port;
+                    new ClientTask().executeOnExecutor(AsyncTask.SERIAL_EXECUTOR,forward_delete_msg,successor);
+                }
+            }
+            process_delete_key(selection,from_port);
         }
         public void process_distribute_keys(String keys){
             String splits[]=keys.split(newline_delimiter);

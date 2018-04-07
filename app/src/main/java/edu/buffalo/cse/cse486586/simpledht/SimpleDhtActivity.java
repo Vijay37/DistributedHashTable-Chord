@@ -42,6 +42,8 @@ public class SimpleDhtActivity extends Activity {
                 new LdumpListener(tv,getContentResolver()));
         findViewById(R.id.button2).setOnClickListener(
                 new GdumpListener(tv,getContentResolver()));
+        findViewById(R.id.del_button).setOnClickListener(
+                new DeleteListener(tv,getContentResolver()));
     }
 
     @Override
