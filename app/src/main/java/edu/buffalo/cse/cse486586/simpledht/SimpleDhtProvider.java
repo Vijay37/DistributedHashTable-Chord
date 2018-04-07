@@ -47,16 +47,13 @@ public class SimpleDhtProvider extends ContentProvider {
     static final String suc_send="Successor"; // Successor identifier
     static final String key_result="Search-Result"; // identifier to tell node about the result it has queried
     static final String add_key="Add-Key"; // Identifier to tell node to add this key into its hash table (Content provider) used when a new node joins
-    static final int timeout=500;
     static final String curr_node_queryall="@"; // Identifier used to query all the keys stored in the current node
     static final String all_node_queryall="*"; // Identifier used to query the entire dht
     private ArrayList<String> my_keys=new ArrayList<String>();
     private ArrayList<String> hashed_ids=new ArrayList<String>();
     private HashMap<String, String> ids_port_map = new HashMap<String, String>() ;
-//    private String[] column_names ={"key","value"};
     private ArrayList<String> global_keys=new ArrayList<String>();
     private HashMap<String,String> global_values =new HashMap<>();
-//    private MatrixCursor globalCursor = new MatrixCursor(column_names);
     private boolean query_started=false;
     @Override
     public int delete(Uri uri, String selection, String[] selectionArgs) {
@@ -156,6 +153,10 @@ public class SimpleDhtProvider extends ContentProvider {
             Log.v("Node Join","Sending node join request to node");
             String msg_request=request_join+delimiter+sender_port;
             new ClientTask().executeOnExecutor(AsyncTask.SERIAL_EXECUTOR, msg_request,to_port);
+        }
+        else{
+            hashed_ids.add(myId);
+            ids_port_map.put(myId,myPort);
         }
     }
     public void process_insert(String key,String value){
@@ -400,7 +401,8 @@ public class SimpleDhtProvider extends ContentProvider {
             }
             else if(format[0].equals(pre_send)){
                 Log.v("Server","Predecessor : "+format[1]);
-                distribute_keys(format[1]);
+                if(my_keys.size()!=0)
+                    distribute_keys(format[1]);
                 predecessor = format[1];
 
             }
@@ -417,19 +419,67 @@ public class SimpleDhtProvider extends ContentProvider {
             else if(format[0].equals(key_result)){
                 process_query_result(format[1],format[2]);
             }
+            else if(format[0].equals(add_key)){
+                process_distribute_keys(format[1]);
+            }
 //            print_my_location();
+        }
+        public void process_distribute_keys(String keys){
+            String splits[]=keys.split(newline_delimiter);
+            String key_splits[];
+            for(String splitter:splits){
+                if(splitter.trim()!="") {
+                    key_splits = splitter.split(other_seperator);
+                    my_keys.add(key_splits[0]);
+                    insert_in_my_node(key_splits[0],key_splits[1]);
+                }
+            }
         }
         public void distribute_keys(String new_pre){
             try {
                 String new_pre_hash = genHash(new_pre);
                 String old_pre_hash = genHash(predecessor);
                 int my_old_pre_diff = myId.compareTo(old_pre_hash);
+                int my_new_pre_diff = myId.compareTo(new_pre_hash);
                 String key_hash="";
                 ArrayList<String> temp=new ArrayList<String>();
                 String dist_key_msg=add_key+delimiter;
+                int my_id_key_diff;
+                int new_pre_key_diff;
+                boolean iam_small=false;
+                boolean iwas_small=false;
+                String value="";
+                if(my_old_pre_diff<0 && my_new_pre_diff <0){ // my new and old pre are greater than me
+                    iam_small=true;
+                }
+                if(my_old_pre_diff<0 && my_new_pre_diff >0){ // my old is greater than me but not new one
+                    iwas_small=true;
+                }
                 for(String key : my_keys){
                     key_hash=genHash(key);
+                    my_id_key_diff=key_hash.compareTo(myId);
+                    new_pre_key_diff=key_hash.compareTo(new_pre_hash);
+                    if(iam_small && new_pre_key_diff<=0){
+                        value=query_my_node(key);
+                        dist_key_msg+=key+other_seperator+value+newline_delimiter;
+                        temp.add(key);
+                    }
+                    else if(iwas_small && my_id_key_diff>0){
+                        value=query_my_node(key);
+                        dist_key_msg+=key+other_seperator+value+newline_delimiter;
+                        temp.add(key);
+                    }
+                    else if(new_pre_key_diff<=0){
+                        value=query_my_node(key);
+                        dist_key_msg+=key+other_seperator+value+newline_delimiter;
+                        temp.add(key);
+                    }
                 }
+                for(String key : temp){  // removing keys from my set of keys and deleting them from content provider
+                    my_keys.remove(key);
+                    delete_key_in_my_node(key);
+                }
+                new ClientTask().executeOnExecutor(AsyncTask.SERIAL_EXECUTOR,dist_key_msg,new_pre);
             }catch (Exception e){
                 e.printStackTrace();
             }
@@ -511,57 +561,16 @@ public class SimpleDhtProvider extends ContentProvider {
             new ClientTask().executeOnExecutor(AsyncTask.SERIAL_EXECUTOR,qu_res_msg,to_port);
         }
         public void process_node_join(String node_port){
-            if(am_i_the_only_node()){
-                Log.v("Process node join","I am the only node");
-                predecessor = node_port;
-                successor = node_port;
-                String pre_msg=pre_send+delimiter+myPort;
-                String suc_msg=suc_send+delimiter+myPort;
-                new ClientTask().executeOnExecutor(AsyncTask.SERIAL_EXECUTOR,pre_msg,node_port);
-                new ClientTask().executeOnExecutor(AsyncTask.SERIAL_EXECUTOR,suc_msg,node_port);
-                try {
-                    String hash_id = genHash(node_port);
-                    hashed_ids.add(hash_id);
-                    hashed_ids.add(myId);
-                    ids_port_map.put(myId,myPort);
-                    ids_port_map.put(hash_id,node_port);
-                }catch(Exception e){
-                    e.printStackTrace();
-                }
-
-            }
-            else{
-                try {
-                    Log.v("Process node join","Other nodes present in the ring");
-                    String new_node_hash = genHash(node_port);
-                    Collections.sort(hashed_ids);
-                    String prevId=hashed_ids.get(0);
-                    boolean loc_found=false; // initialized to check if the location of node is found
-                    for(String hId:hashed_ids){
-                        if(new_node_hash.compareTo(hId)<0 && new_node_hash.compareTo(prevId)>0){
-                            String suc_port=ids_port_map.get(hId);
-                            String pre_port=ids_port_map.get(prevId);
-                            String pre_msg=pre_send+delimiter+pre_port;
-                            String suc_msg=suc_send+delimiter+suc_port;
-                            // sending message to new node about its pre and suc
-                            new ClientTask().executeOnExecutor(AsyncTask.SERIAL_EXECUTOR,pre_msg,node_port);
-                            new ClientTask().executeOnExecutor(AsyncTask.SERIAL_EXECUTOR,suc_msg,node_port);
-                            // Sending messages to its suc and pre
-                            pre_msg=pre_send+delimiter+node_port;
-                            suc_msg=suc_send+delimiter+node_port;
-                            new ClientTask().executeOnExecutor(AsyncTask.SERIAL_EXECUTOR,pre_msg,suc_port);
-                            new ClientTask().executeOnExecutor(AsyncTask.SERIAL_EXECUTOR,suc_msg,pre_port);
-                            loc_found=true; // Setting it to true as location is found
-                            break;
-                        }
-                        prevId=hId;
-                    }
-                    if(!loc_found){
-                        Log.v("Node join","Location not found");
-                        String firstId=hashed_ids.get(0);
-                        String lastId=hashed_ids.get(hashed_ids.size()-1);
-                        String suc_port=ids_port_map.get(firstId);
-                        String pre_port=ids_port_map.get(lastId);
+            try {
+                Log.v("Process node join","Other nodes present in the ring");
+                String new_node_hash = genHash(node_port);
+                Collections.sort(hashed_ids);
+                String prevId=hashed_ids.get(0);
+                boolean loc_found=false; // initialized to check if the location of node is found
+                for(String hId:hashed_ids){
+                    if(new_node_hash.compareTo(hId)<0 && new_node_hash.compareTo(prevId)>0){
+                        String suc_port=ids_port_map.get(hId);
+                        String pre_port=ids_port_map.get(prevId);
                         String pre_msg=pre_send+delimiter+pre_port;
                         String suc_msg=suc_send+delimiter+suc_port;
                         // sending message to new node about its pre and suc
@@ -572,12 +581,32 @@ public class SimpleDhtProvider extends ContentProvider {
                         suc_msg=suc_send+delimiter+node_port;
                         new ClientTask().executeOnExecutor(AsyncTask.SERIAL_EXECUTOR,pre_msg,suc_port);
                         new ClientTask().executeOnExecutor(AsyncTask.SERIAL_EXECUTOR,suc_msg,pre_port);
+                        loc_found=true; // Setting it to true as location is found
+                        break;
                     }
-                    hashed_ids.add(new_node_hash);
-                    ids_port_map.put(new_node_hash,node_port);
-                }catch(Exception e){
-                    e.printStackTrace();
+                    prevId=hId;
                 }
+                if(!loc_found){
+                    Log.v("Node join","Location not found");
+                    String firstId=hashed_ids.get(0);
+                    String lastId=hashed_ids.get(hashed_ids.size()-1);
+                    String suc_port=ids_port_map.get(firstId);
+                    String pre_port=ids_port_map.get(lastId);
+                    String pre_msg=pre_send+delimiter+pre_port;
+                    String suc_msg=suc_send+delimiter+suc_port;
+                    // sending message to new node about its pre and suc
+                    new ClientTask().executeOnExecutor(AsyncTask.SERIAL_EXECUTOR,pre_msg,node_port);
+                    new ClientTask().executeOnExecutor(AsyncTask.SERIAL_EXECUTOR,suc_msg,node_port);
+                    // Sending messages to its suc and pre
+                    pre_msg=pre_send+delimiter+node_port;
+                    suc_msg=suc_send+delimiter+node_port;
+                    new ClientTask().executeOnExecutor(AsyncTask.SERIAL_EXECUTOR,pre_msg,suc_port);
+                    new ClientTask().executeOnExecutor(AsyncTask.SERIAL_EXECUTOR,suc_msg,pre_port);
+                }
+                hashed_ids.add(new_node_hash);
+                ids_port_map.put(new_node_hash,node_port);
+            }catch(Exception e){
+                e.printStackTrace();
             }
         }
 
