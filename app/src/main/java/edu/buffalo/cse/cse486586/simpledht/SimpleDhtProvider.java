@@ -5,7 +5,6 @@ import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStreamReader;
-import java.io.OutputStream;
 import java.io.PrintWriter;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
@@ -14,12 +13,9 @@ import java.net.Socket;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
-import java.util.Collection;
 import java.util.Collections;
 import java.util.Formatter;
 import java.util.HashMap;
-import java.util.Map;
-import java.util.Set;
 
 import android.content.ContentProvider;
 import android.content.ContentValues;
@@ -30,7 +26,6 @@ import android.net.Uri;
 import android.os.AsyncTask;
 import android.telephony.TelephonyManager;
 import android.util.Log;
-import android.widget.TextView;
 
 import static android.content.ContentValues.TAG;
 
@@ -42,18 +37,27 @@ public class SimpleDhtProvider extends ContentProvider {
     private String parent_port="5554"; // Info on who is the parent port which accepts node join requests
     static final int SERVER_PORT = 10000;
     static final int port_mul_factor=2; // multiplication factor to get port number from emulator number
-    static final String delimiter="`vijayaha`"; // Delimiter string to seperate and identify messages
+    static final String delimiter="`vh`"; // Delimiter string to separate and identify messages
+    static final String newline_delimiter="`nl`";  // Delimiter to separate newline
+    static final String other_seperator ="`as`"; // Delimiter to separate all values returned by a node when asked for key *
     static final String request_join="Node-Join"; // Node join message identifier
     static final String key_search="Data-Search"; // Data search message identifier
     static final String key_insert="Data-Insert"; // Key insert message identifier
     static final String pre_send="Predecessor"; // Predecessor identifier
     static final String suc_send="Successor"; // Successor identifier
+    static final String key_result="Search-Result"; // identifier to tell node about the result it has queried
+    static final String add_key="Add-Key"; // Identifier to tell node to add this key into its hash table (Content provider) used when a new node joins
     static final int timeout=500;
     static final String curr_node_queryall="@"; // Identifier used to query all the keys stored in the current node
     static final String all_node_queryall="*"; // Identifier used to query the entire dht
     private ArrayList<String> my_keys=new ArrayList<String>();
     private ArrayList<String> hashed_ids=new ArrayList<String>();
     private HashMap<String, String> ids_port_map = new HashMap<String, String>() ;
+//    private String[] column_names ={"key","value"};
+    private ArrayList<String> global_keys=new ArrayList<String>();
+    private HashMap<String,String> global_values =new HashMap<>();
+//    private MatrixCursor globalCursor = new MatrixCursor(column_names);
+    private boolean query_started=false;
     @Override
     public int delete(Uri uri, String selection, String[] selectionArgs) {
         // TODO Auto-generated method stub
@@ -227,6 +231,81 @@ public class SimpleDhtProvider extends ContentProvider {
                     mc.newRow().add("key", key).add("value", value.trim());
                 }
             }
+            else if(selection.equals(all_node_queryall)){
+                // write function to get all data
+                mc = query_all_nodes(selection);
+            }
+            else{
+                mc=query_other_nodes(selection);
+            }
+        }
+        return mc;
+    }
+    private MatrixCursor query_all_nodes(String selection){ // Querying all nodes
+        String[] column_names ={"key","value"};
+        MatrixCursor mc = new MatrixCursor(column_names);
+        try{
+            String value="";
+            for(String key: my_keys){
+                value=query_my_node(key);
+                mc.newRow().add("key", key).add("value", value.trim());
+            }
+            String forward_search_msg = key_search + delimiter + selection+delimiter+myPort;
+            query_started=true;
+            new ClientTask().executeOnExecutor(AsyncTask.SERIAL_EXECUTOR,forward_search_msg,successor);
+            synchronized (global_keys){
+                while(query_started){
+                    global_keys.wait();
+                }
+                for(String key : global_keys){
+                    value = global_values.get(key);
+                    mc.newRow().add("key", key).add("value", value.trim());
+                }
+                global_keys.clear();// resetting global_keys
+            }
+        }catch(Exception e){
+            e.printStackTrace();
+        }
+        return mc;
+    }
+    private MatrixCursor query_other_nodes(String selection){
+        String[] column_names ={"key","value"};
+        MatrixCursor mc = new MatrixCursor(column_names);
+        try {
+            String key_hash = genHash(selection);
+            String pre_hash = genHash(predecessor);
+            String value;
+            int pre_key_diff = key_hash.compareTo(pre_hash);
+            int my_key_diff = key_hash.compareTo(myId);
+            int my_pre_diff = myId.compareTo(pre_hash);
+
+            if (pre_key_diff > 0 && my_key_diff <= 0) {  // if the id is between my predessor and me
+                value=query_my_node(selection);
+                mc.newRow().add("key", selection).add("value", value.trim());
+            } else if (pre_key_diff > 0 && my_pre_diff < 0) { // If the id is greater than my predessor and I am less than my predessor where end and start meet
+                value=query_my_node(selection);
+                mc.newRow().add("key", selection).add("value", value.trim());
+            } else if (my_pre_diff < 0 && my_key_diff <= 0) { // If the id smaller than my node and I am less than my predessor
+                value=query_my_node(selection);
+                mc.newRow().add("key", selection).add("value", value.trim());
+            } else { // forward the insert to my successor
+                String forward_search_msg = key_search + delimiter + selection+delimiter+myPort;
+                query_started=true;
+                new ClientTask().executeOnExecutor(AsyncTask.SERIAL_EXECUTOR,forward_search_msg,successor);
+                synchronized (global_keys){
+                    while(query_started){
+                        global_keys.wait();
+                    }
+                    for(String key : global_keys){
+                        value = global_values.get(key);
+                        mc.newRow().add("key", key).add("value", value.trim());
+                    }
+                    global_keys.clear();// resetting global_keys
+                }
+            }
+            return mc;
+        }catch(Exception e){
+            e.printStackTrace();
         }
         return mc;
     }
@@ -320,8 +399,10 @@ public class SimpleDhtProvider extends ContentProvider {
                 process_node_join(format[1]);
             }
             else if(format[0].equals(pre_send)){
+                Log.v("Server","Predecessor : "+format[1]);
+                distribute_keys(format[1]);
                 predecessor = format[1];
-                Log.v("Server","Predecessor : "+predecessor);
+
             }
             else if(format[0].equals(suc_send)){
                 successor = format[1];
@@ -330,7 +411,104 @@ public class SimpleDhtProvider extends ContentProvider {
             else if(format[0].equals(key_insert)){
                 process_insert(format[1],format[2]);
             }
-            print_my_location();
+            else if(format[0].equals(key_search)){
+                process_query_serverside(format[1],format[2]);
+            }
+            else if(format[0].equals(key_result)){
+                process_query_result(format[1],format[2]);
+            }
+//            print_my_location();
+        }
+        public void distribute_keys(String new_pre){
+            try {
+                String new_pre_hash = genHash(new_pre);
+                String old_pre_hash = genHash(predecessor);
+                int my_old_pre_diff = myId.compareTo(old_pre_hash);
+                String key_hash="";
+                ArrayList<String> temp=new ArrayList<String>();
+                String dist_key_msg=add_key+delimiter;
+                for(String key : my_keys){
+                    key_hash=genHash(key);
+                }
+            }catch (Exception e){
+                e.printStackTrace();
+            }
+
+        }
+        public void process_query_result(String key, String value){
+            synchronized (global_keys) {
+                if(!key.equals(all_node_queryall)) {
+                    global_keys.add(key);
+                    global_values.put(key, value);
+                    query_started = false;
+                    global_keys.notify();
+                }
+                else{
+                    String[] keys_set=value.split(newline_delimiter);
+                    String[] key_line;
+                    String recv_port="";
+                    for(String splits : keys_set){
+                        key_line=splits.split(other_seperator);
+                        if(key_line.length>1){
+                            global_keys.add(key_line[0]);
+                            global_values.put(key_line[0],key_line[1]);
+                        }
+                        else{
+                            recv_port=splits;
+                            Log.v("Process Asterisk","Recevied values from :"+recv_port);
+                        }
+                    }
+                    if(recv_port.equals(predecessor)){
+                        query_started=false;
+                        global_keys.notify();
+                    }
+
+                }
+            }
+        }
+        public void process_query_serverside(String key, String from_port){ // function to process received query request
+            try {
+                if(key.equals(all_node_queryall)){
+                    // handle this scenario when asked for all keys
+                    String return_msg=key_result+delimiter+key+delimiter;
+                    String value="";
+                    for(String selection : my_keys){
+                        value=query_my_node(selection);
+                        return_msg+=selection+ other_seperator +value+newline_delimiter;
+                    }
+                    return_msg+=myPort;
+                    new ClientTask().executeOnExecutor(AsyncTask.SERIAL_EXECUTOR, return_msg, from_port); // returning my keys to node who wants it
+                    String forward_search_msg = key_search + delimiter + key+delimiter+from_port;
+                    if(!successor.equals(from_port))
+                        new ClientTask().executeOnExecutor(AsyncTask.SERIAL_EXECUTOR, forward_search_msg, successor); // forwarding the search to my successor
+
+                }
+                else {
+                    String key_hash = genHash(key);
+                    String pre_hash = genHash(predecessor);
+                    String value = "";
+                    int pre_key_diff = key_hash.compareTo(pre_hash);
+                    int my_key_diff = key_hash.compareTo(myId);
+                    int my_pre_diff = myId.compareTo(pre_hash);
+                    if (pre_key_diff > 0 && my_key_diff <= 0) {  // if the id is between my predessor and me
+                        send_my_answer(key,from_port);
+                    } else if (pre_key_diff > 0 && my_pre_diff < 0) { // If the id is greater than my predessor and I am less than my predessor where end and start meet
+                        send_my_answer(key,from_port);
+                    } else if (my_pre_diff < 0 && my_key_diff <= 0) { // If the id smaller than my node and I am less than my predessor
+                        send_my_answer(key,from_port);
+                    } else { // forward the insert to my successor
+                        String forward_search_msg = key_search + delimiter + key + delimiter + from_port;
+                        new ClientTask().executeOnExecutor(AsyncTask.SERIAL_EXECUTOR, forward_search_msg, successor);
+                    }
+                }
+            }catch(Exception e){
+                e.printStackTrace();
+            }
+        }
+        public void send_my_answer(String key,String to_port){
+            String value = query_my_node(key);
+            String qu_res_msg = key_result+delimiter+key+delimiter+value;
+            new ClientTask().executeOnExecutor(AsyncTask.SERIAL_EXECUTOR,qu_res_msg,to_port);
         }
         public void process_node_join(String node_port){
             if(am_i_the_only_node()){
@@ -419,7 +597,6 @@ public class SimpleDhtProvider extends ContentProvider {
                 socket = new Socket();
                 socket.connect(new InetSocketAddress(InetAddress.getByAddress(new byte[]{10, 0, 2, 2}),
                         Integer.parseInt(toPort)));
-//                socket.setSoTimeout(timeout);
                 out = new PrintWriter(socket.getOutputStream(), true);
                 out.println(msgToSend);
                 bR = new BufferedReader(new InputStreamReader(socket.getInputStream())); // Read message from the socket

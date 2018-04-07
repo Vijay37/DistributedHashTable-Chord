@@ -9,7 +9,7 @@ import android.util.Log;
 import android.view.View;
 import android.widget.TextView;
 
-public class LdumpListener implements View.OnClickListener {
+public class GdumpListener implements View.OnClickListener {
     private static final String TAG = LdumpListener.class.getName();
     private static final String KEY_FIELD = "key";
     private static final String VALUE_FIELD = "value";
@@ -17,9 +17,9 @@ public class LdumpListener implements View.OnClickListener {
     private final TextView mTextView;
     private final ContentResolver mContentResolver;
     private final Uri mUri;
-    private final String local_queryall="@";
+    private final String local_queryall="*";
 
-    public LdumpListener(TextView _tv, ContentResolver _cr) {
+    public GdumpListener(TextView _tv, ContentResolver _cr) {
         mTextView = _tv;
         mContentResolver = _cr;
         mUri = buildUri("content", "edu.buffalo.cse.cse486586.simpledht.provider");
@@ -34,7 +34,7 @@ public class LdumpListener implements View.OnClickListener {
 
     @Override
     public void onClick(View v) {
-        new LdumpListener.Task().executeOnExecutor(AsyncTask.THREAD_POOL_EXECUTOR);
+        new GdumpListener.Task().executeOnExecutor(AsyncTask.THREAD_POOL_EXECUTOR);
     }
 
     private class Task extends AsyncTask<Void, String, Void> {
