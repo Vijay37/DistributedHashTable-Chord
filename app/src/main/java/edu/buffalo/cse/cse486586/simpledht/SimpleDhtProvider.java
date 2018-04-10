@@ -59,18 +59,6 @@ public class SimpleDhtProvider extends ContentProvider {
     @Override
     public int delete(Uri uri, String selection, String[] selectionArgs) {
         // TODO Auto-generated method stub
-        if(am_i_the_only_node()){
-            Log.v("Delete","I am the only node :"+selection);
-            if(selection.equals("*") || selection.equals("@")){
-                delete_my_keys();
-                my_keys.clear();
-            }
-            else{
-                delete_key_in_my_node(selection);
-                my_keys.remove(selection);
-            }
-        }
-        else{
             if(selection.equals(curr_node_queryall)){
                 delete_my_keys();
                 my_keys.clear();
@@ -78,12 +66,13 @@ public class SimpleDhtProvider extends ContentProvider {
             else if(selection.equals(all_node_queryall)){
                 delete_my_keys();
                 my_keys.clear();
+                if(am_i_the_only_node())
+                    return 0;
                 String forward_delete_msg=del_key+delimiter+selection;
                 new ClientTask().executeOnExecutor(AsyncTask.SERIAL_EXECUTOR,forward_delete_msg,successor);
             }
             else
                 process_delete_key(selection,myPort);
-        }
         return 0;
     }
 
@@ -177,34 +166,12 @@ public class SimpleDhtProvider extends ContentProvider {
     }
     public void process_insert(String key,String value){
         Log.v("Insert","Processing insert");
-        if(am_i_the_only_node()){
-            Log.v("Insert","I am the only node in the ring");
+        if(does_it_belong_to_my_node(key)){
             insert_in_my_node(key,value);
         }
         else{
-            // calculate genhash value and process it as per the chord
-            try {
-                String key_hash = genHash(key);
-                String pre_hash = genHash(predecessor);
-                int pre_key_diff = key_hash.compareTo(pre_hash);
-                int my_key_diff = key_hash.compareTo(myId);
-                int my_pre_diff = myId.compareTo(pre_hash);
-                if(pre_key_diff>0 && my_key_diff<=0){  // if the id is between my predessor and me
-                    insert_in_my_node(key,value);
-                }
-                else if(pre_key_diff>0 && my_pre_diff<0){ // If the id is greater than my predessor and I am less than my predessor where end and start meet
-                    insert_in_my_node(key,value);
-                }
-                else if(my_pre_diff<0 && my_key_diff<=0){ // If the id smaller than my node and I am less than my predessor
-                    insert_in_my_node(key,value);
-                }
-                else{ // forward the insert to my successor
-                    String forward_insert_msg=key_insert+delimiter+key+delimiter+value;
-                    new ClientTask().executeOnExecutor(AsyncTask.SERIAL_EXECUTOR,forward_insert_msg,successor);
-                }
-            }catch(Exception e){
-                e.printStackTrace();
-            }
+            String forward_insert_msg=key_insert+delimiter+key+delimiter+value;
+            new ClientTask().executeOnExecutor(AsyncTask.SERIAL_EXECUTOR,forward_insert_msg,successor);
         }
     }
     public void insert_in_my_node(String key, String value){
@@ -222,39 +189,20 @@ public class SimpleDhtProvider extends ContentProvider {
         Log.v("Query", selection);
         String[] column_names ={"key","value"};
         MatrixCursor mc = new MatrixCursor(column_names);
-        if(am_i_the_only_node()) {
-            Log.v("Query","I am the only node");
+        if(selection.equals(curr_node_queryall)){
+            Log.v("Query","Querying "+selection+" when I am not the only node");
             String value="";
-            if(selection.equals(all_node_queryall) || selection.equals(curr_node_queryall)) {
-                Log.v("Query","Querying "+selection+" when I am the only node");
-                for(String key : my_keys) {
-                    value=query_my_node(key);
-                    mc.newRow().add("key", key).add("value", value.trim());
-                }
+            for(String key : my_keys) {
+                value=query_my_node(key);
+                mc.newRow().add("key", key).add("value", value.trim());
             }
-            else{
-                value=query_my_node(selection);
-                mc.newRow().add("key", selection).add("value", value.trim());
-            }
-
-            mc.close();
+        }
+        else if(selection.equals(all_node_queryall)){
+            // write function to get all data
+            mc = query_all_nodes(selection);
         }
         else{
-            if(selection.equals(curr_node_queryall)){
-                Log.v("Query","Querying "+selection+" when I am not the only node");
-                String value="";
-                for(String key : my_keys) {
-                    value=query_my_node(key);
-                    mc.newRow().add("key", key).add("value", value.trim());
-                }
-            }
-            else if(selection.equals(all_node_queryall)){
-                // write function to get all data
-                mc = query_all_nodes(selection);
-            }
-            else{
-                mc=query_other_nodes(selection);
-            }
+            mc=query_other_nodes(selection);
         }
         return mc;
     }
@@ -267,6 +215,8 @@ public class SimpleDhtProvider extends ContentProvider {
                 value=query_my_node(key);
                 mc.newRow().add("key", key).add("value", value.trim());
             }
+            if(am_i_the_only_node())
+                return mc;
             String forward_search_msg = key_search + delimiter + selection+delimiter+myPort;
             query_started=true;
             new ClientTask().executeOnExecutor(AsyncTask.SERIAL_EXECUTOR,forward_search_msg,successor);
@@ -288,39 +238,26 @@ public class SimpleDhtProvider extends ContentProvider {
     private MatrixCursor query_other_nodes(String selection){
         String[] column_names ={"key","value"};
         MatrixCursor mc = new MatrixCursor(column_names);
+        String value="";
         try {
-            String key_hash = genHash(selection);
-            String pre_hash = genHash(predecessor);
-            String value;
-            int pre_key_diff = key_hash.compareTo(pre_hash);
-            int my_key_diff = key_hash.compareTo(myId);
-            int my_pre_diff = myId.compareTo(pre_hash);
-
-            if (pre_key_diff > 0 && my_key_diff <= 0) {  // if the id is between my predessor and me
-                value=query_my_node(selection);
+            if (does_it_belong_to_my_node(selection)) {
+                value = query_my_node(selection);
                 mc.newRow().add("key", selection).add("value", value.trim());
-            } else if (pre_key_diff > 0 && my_pre_diff < 0) { // If the id is greater than my predessor and I am less than my predessor where end and start meet
-                value=query_my_node(selection);
-                mc.newRow().add("key", selection).add("value", value.trim());
-            } else if (my_pre_diff < 0 && my_key_diff <= 0) { // If the id smaller than my node and I am less than my predessor
-                value=query_my_node(selection);
-                mc.newRow().add("key", selection).add("value", value.trim());
-            } else { // forward the insert to my successor
-                String forward_search_msg = key_search + delimiter + selection+delimiter+myPort;
-                query_started=true;
-                new ClientTask().executeOnExecutor(AsyncTask.SERIAL_EXECUTOR,forward_search_msg,successor);
-                synchronized (global_keys){
-                    while(query_started){
+            } else {
+                String forward_search_msg = key_search + delimiter + selection + delimiter + myPort;
+                query_started = true;
+                new ClientTask().executeOnExecutor(AsyncTask.SERIAL_EXECUTOR, forward_search_msg, successor);
+                synchronized (global_keys) {
+                    while (query_started) {
                         global_keys.wait();
                     }
-                    for(String key : global_keys){
+                    for (String key : global_keys) {
                         value = global_values.get(key);
                         mc.newRow().add("key", key).add("value", value.trim());
                     }
                     global_keys.clear();// resetting global_keys
                 }
             }
-            return mc;
         }catch(Exception e){
             e.printStackTrace();
         }
@@ -352,30 +289,13 @@ public class SimpleDhtProvider extends ContentProvider {
         }
     }
     public void process_delete_key(String key,String from_port){
-        try {
-            String key_hash = genHash(key);
-            String pre_hash = genHash(predecessor);
-            int pre_key_diff = key_hash.compareTo(pre_hash);
-            int my_key_diff = key_hash.compareTo(myId);
-            int my_pre_diff = myId.compareTo(pre_hash);
-            if(pre_key_diff>0 && my_key_diff<=0){  // if the id is between my predessor and me
-                delete_key_in_my_node(key);
-                my_keys.remove(key);
-            }
-            else if(pre_key_diff>0 && my_pre_diff<0){ // If the id is greater than my predessor and I am less than my predessor where end and start meet
-                delete_key_in_my_node(key);
-                my_keys.remove(key);
-            }
-            else if(my_pre_diff<0 && my_key_diff<=0){ // If the id smaller than my node and I am less than my predessor
-                delete_key_in_my_node(key);
-                my_keys.remove(key);
-            }
-            else{ // forward the insert to my successor
-                String forward_delete_msg=del_key+delimiter+key+delimiter+from_port;
-                new ClientTask().executeOnExecutor(AsyncTask.SERIAL_EXECUTOR,forward_delete_msg,successor);
-            }
-        }catch(Exception e){
-            e.printStackTrace();
+        if(does_it_belong_to_my_node(key)){
+            delete_key_in_my_node(key);
+            my_keys.remove(key);
+        }
+        else{
+            String forward_delete_msg=del_key+delimiter+key+delimiter+from_port;
+            new ClientTask().executeOnExecutor(AsyncTask.SERIAL_EXECUTOR,forward_delete_msg,successor);
         }
     }
     public void delete_my_keys(){
@@ -383,16 +303,39 @@ public class SimpleDhtProvider extends ContentProvider {
         for(String key : my_keys)
             delete_key_in_my_node(key);
     }
+    public boolean does_it_belong_to_my_node(String key){
+        try {
+            if(am_i_the_only_node()){
+                Log.v("Key Location","I am the only node in the ring");
+                return true;
+            }
+            String key_hash = genHash(key);
+            String pre_hash = genHash(predecessor);
+            int pre_key_diff = key_hash.compareTo(pre_hash);
+            int my_key_diff = key_hash.compareTo(myId);
+            int my_pre_diff = myId.compareTo(pre_hash);
+            if(pre_key_diff>0 && my_key_diff<=0){  // if the id is between my predessor and me
+                return true;
+            }
+            else if(pre_key_diff>0 && my_pre_diff<0){ // If the id is greater than my predessor and I am less than my predessor where end and start meet
+                return true;
+            }
+            else if(my_pre_diff<0 && my_key_diff<=0){ // If the id smaller than my node and I am less than my predessor
+                return true;
+            }
+            else{
+                return false;
+            }
+        }catch(Exception e){
+            e.printStackTrace();
+        }
+        return false;
+    }
     private boolean am_i_the_only_node(){ // Function which returns if the node is single in the chord ring
         if(myId==predecessor && myId==successor)
             return true;
         else
             return false;
-    }
-    public void print_my_location(){
-        Log.v("About me","MY PORT :"+myPort);
-        Log.v("About me","MY PRE :"+predecessor);
-        Log.v("About me","MY SUC :"+successor);
     }
     private class ServerTask extends AsyncTask<ServerSocket, String, Void> { // Server task to accept client connections and process their messages
         @Override
@@ -596,19 +539,10 @@ public class SimpleDhtProvider extends ContentProvider {
 
                 }
                 else {
-                    String key_hash = genHash(key);
-                    String pre_hash = genHash(predecessor);
-                    String value = "";
-                    int pre_key_diff = key_hash.compareTo(pre_hash);
-                    int my_key_diff = key_hash.compareTo(myId);
-                    int my_pre_diff = myId.compareTo(pre_hash);
-                    if (pre_key_diff > 0 && my_key_diff <= 0) {  // if the id is between my predessor and me
+                    if(does_it_belong_to_my_node(key)){
                         send_my_answer(key,from_port);
-                    } else if (pre_key_diff > 0 && my_pre_diff < 0) { // If the id is greater than my predessor and I am less than my predessor where end and start meet
-                        send_my_answer(key,from_port);
-                    } else if (my_pre_diff < 0 && my_key_diff <= 0) { // If the id smaller than my node and I am less than my predessor
-                        send_my_answer(key,from_port);
-                    } else { // forward the insert to my successor
+                    }
+                    else{
                         String forward_search_msg = key_search + delimiter + key + delimiter + from_port;
                         new ClientTask().executeOnExecutor(AsyncTask.SERIAL_EXECUTOR, forward_search_msg, successor);
                     }
